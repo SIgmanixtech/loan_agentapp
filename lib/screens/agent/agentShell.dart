@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../services/agentAuthService.dart';
+import '../../services/authSession.dart';
 import '../../core/widgets/bottomNavigation.dart';
 
 import 'dashboard.dart';
@@ -15,8 +16,29 @@ class AgentShell extends StatefulWidget {
   State<AgentShell> createState() => _AgentShellState();
 }
 
-class _AgentShellState extends State<AgentShell> {
+class _AgentShellState extends State<AgentShell> with WidgetsBindingObserver {
   int currentIndex = 0;
+
+  @override
+  void initState() {
+    super.initState();
+
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      AuthSession.instance.checkExpiry();
+    }
+  }
 
   Future<void> _logout() async {
     final shouldLogout = await showDialog<bool>(

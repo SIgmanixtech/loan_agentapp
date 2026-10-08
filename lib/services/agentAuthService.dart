@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'apiClient.dart';
 import 'authStorage.dart';
 import '../models/agentModel.dart';
+import 'authSession.dart';
 
 class AgentAuthService {
   static Future<String> register({
@@ -64,6 +65,8 @@ class AgentAuthService {
       role: agent.role,
     );
 
+    await AuthSession.instance.startSession(token);
+
     return agent;
   }
 
@@ -74,6 +77,8 @@ class AgentAuthService {
      * The current JWT setup is stateless, so for now we simply
      * remove the token and agent information from secure storage.
      */
+
+    AuthSession.instance.dispose();
 
     await AuthStorage.clearAuth();
   }

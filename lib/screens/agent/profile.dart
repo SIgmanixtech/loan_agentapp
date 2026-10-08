@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../core/theme/appColors.dart';
@@ -15,14 +17,20 @@ class AgentProfile extends StatefulWidget {
 }
 
 class _AgentProfileState extends State<AgentProfile> {
+  static const _genders = ['MALE', 'FEMALE', 'OTHER'];
+
   bool isLoading = true;
   bool isSaving = false;
   bool isEditing = false;
+  bool isPincodeLoading = false;
 
   String? errorMessage;
 
   AgentProfileModel? profile;
 
+  final fullNameController = TextEditingController();
+  final emailController = TextEditingController();
+  final phoneController = TextEditingController();
   final dateOfBirthController = TextEditingController();
   final addressController = TextEditingController();
   final cityController = TextEditingController();
@@ -31,15 +39,28 @@ class _AgentProfileState extends State<AgentProfile> {
 
   String? selectedGender;
 
+  List<String> cityOptions = [];
+
+  Timer? _pincodeDebounce;
+
   @override
   void initState() {
     super.initState();
+
+    pincodeController.addListener(_onPincodeChanged);
 
     _loadProfile();
   }
 
   @override
   void dispose() {
+    _pincodeDebounce?.cancel();
+
+    pincodeController.removeListener(_onPincodeChanged);
+
+    fullNameController.dispose();
+    emailController.dispose();
+    phoneController.dispose();
     dateOfBirthController.dispose();
     addressController.dispose();
     cityController.dispose();
@@ -50,6 +71,11 @@ class _AgentProfileState extends State<AgentProfile> {
   }
 
   Future<void> _loadProfile() async {
+    // Refreshing while editing would discard the unsaved changes.
+    if (isEditing) {
+      return;
+    }
+
     setState(() {
       isLoading = true;
       errorMessage = null;
@@ -78,6 +104,12 @@ class _AgentProfileState extends State<AgentProfile> {
   }
 
   void _populateFields(AgentProfileModel data) {
+    fullNameController.text = data.fullName;
+
+    emailController.text = data.email;
+
+    phoneController.text = data.phone;
+
     dateOfBirthController.text = data.dateOfBirth ?? '';
 
     addressController.text = data.address ?? '';
@@ -88,10 +120,134 @@ class _AgentProfileState extends State<AgentProfile> {
 
     pincodeController.text = data.pincode ?? '';
 
-    selectedGender = data.gender;
+    final gender = data.gender?.toUpperCase();
+
+    selectedGender = _genders.contains(gender) ? gender : null;
+  }
+
+  void _startEditing() {
+    if (profile == null) {
+      return;
+    }
+
+    _populateFields(profile!);
+
+    setState(() {
+      isEditing = true;
+      cityOptions = [];
+    });
+
+    final pincode = pincodeController.text.trim();
+
+    if (RegExp(r'^\d{6}$').hasMatch(pincode)) {
+      _lookupPincode(pincode, keepExistingCity: true);
+    }
+  }
+
+  void _cancelEditing() {
+    _pincodeDebounce?.cancel();
+
+    setState(() {
+      isEditing = false;
+      isPincodeLoading = false;
+      cityOptions = [];
+    });
+
+    if (profile != null) {
+      _populateFields(profile!);
+    }
+  }
+
+  void _onPincodeChanged() {
+    if (!isEditing || isSaving) {
+      return;
+    }
+
+    final pincode = pincodeController.text.trim();
+
+    _pincodeDebounce?.cancel();
+
+    if (!RegExp(r'^\d{6}$').hasMatch(pincode)) {
+      if (cityOptions.isNotEmpty ||
+          cityController.text.isNotEmpty ||
+          stateController.text.isNotEmpty ||
+          isPincodeLoading) {
+        setState(() {
+          cityOptions = [];
+          cityController.clear();
+          stateController.clear();
+          isPincodeLoading = false;
+        });
+      }
+
+      return;
+    }
+
+    _pincodeDebounce = Timer(const Duration(milliseconds: 500), () {
+      _lookupPincode(pincode);
+    });
+  }
+
+  Future<void> _lookupPincode(
+    String pincode, {
+    bool keepExistingCity = false,
+  }) async {
+    final existingCity = keepExistingCity ? cityController.text.trim() : '';
+
+    setState(() {
+      isPincodeLoading = true;
+      cityOptions = [];
+
+      if (!keepExistingCity) {
+        cityController.clear();
+        stateController.clear();
+      }
+    });
+
+    PincodeResult? result;
+    String? lookupError;
+
+    try {
+      result = await AgentProfileService.lookupPincode(pincode);
+    } catch (e) {
+      lookupError = e.toString().replaceFirst('Exception: ', '');
+    }
+
+    // Ignore the answer if the PIN code was changed in the meantime.
+    if (!mounted || !isEditing || pincodeController.text.trim() != pincode) {
+      return;
+    }
+
+    if (result == null) {
+      setState(() {
+        isPincodeLoading = false;
+      });
+
+      _showError(lookupError ?? 'Unable to verify this PIN code.');
+
+      return;
+    }
+
+    final areas = result.areas;
+    final state = result.state;
+
+    final matchingCity = areas
+        .where((area) => area.toLowerCase() == existingCity.toLowerCase())
+        .firstOrNull;
+
+    setState(() {
+      isPincodeLoading = false;
+      cityOptions = areas;
+      stateController.text = state;
+      cityController.text = matchingCity ?? '';
+    });
   }
 
   Future<void> _saveProfile() async {
+    final pincode = pincodeController.text.trim();
+    final city = cityController.text.trim();
+    final state = stateController.text.trim();
+
     if (dateOfBirthController.text.trim().isEmpty) {
       _showError('Please enter your date of birth.');
       return;
@@ -107,18 +263,23 @@ class _AgentProfileState extends State<AgentProfile> {
       return;
     }
 
-    if (cityController.text.trim().isEmpty) {
-      _showError('Please enter your city.');
+    if (!RegExp(r'^\d{6}$').hasMatch(pincode)) {
+      _showError('Please enter a valid 6-digit PIN code.');
       return;
     }
 
-    if (stateController.text.trim().isEmpty) {
-      _showError('Please enter your state.');
+    if (isPincodeLoading) {
+      _showError('Please wait while we verify the PIN code.');
       return;
     }
 
-    if (pincodeController.text.trim().isEmpty) {
-      _showError('Please enter your pincode.');
+    if (cityOptions.isEmpty || state.isEmpty) {
+      _showError('Please enter a valid PIN code and select your city/area.');
+      return;
+    }
+
+    if (!cityOptions.contains(city)) {
+      _showError('Please select your city/area.');
       return;
     }
 
@@ -131,21 +292,22 @@ class _AgentProfileState extends State<AgentProfile> {
         dateOfBirth: dateOfBirthController.text.trim(),
         gender: selectedGender!,
         address: addressController.text.trim(),
-        city: cityController.text.trim(),
-        state: stateController.text.trim(),
-        pincode: pincodeController.text.trim(),
+        city: city,
+        state: state,
+        pincode: pincode,
       );
 
       if (!mounted) return;
 
       profile = result;
 
-      _populateFields(result);
-
       setState(() {
         isEditing = false;
         isSaving = false;
+        cityOptions = [];
       });
+
+      _populateFields(result);
 
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -233,6 +395,10 @@ class _AgentProfileState extends State<AgentProfile> {
           const SizedBox(height: 20),
 
           _buildAddressInformation(),
+
+          const SizedBox(height: 20),
+
+          _buildActions(),
         ],
       ),
     );
@@ -242,27 +408,65 @@ class _AgentProfileState extends State<AgentProfile> {
     return _sectionCard(
       title: 'Basic Information',
       children: [
-        _infoRow(
-          icon: Icons.person_outline,
-          label: 'Full Name',
-          value: profile!.fullName,
-        ),
+        if (!isEditing) ...[
+          _infoRow(
+            icon: Icons.person_outline,
+            label: 'Full Name',
+            value: profile!.fullName,
+          ),
 
-        const Divider(),
+          const Divider(),
 
-        _infoRow(
-          icon: Icons.email_outlined,
-          label: 'Email',
-          value: profile!.email,
-        ),
+          _infoRow(
+            icon: Icons.email_outlined,
+            label: 'Email',
+            value: profile!.email,
+          ),
 
-        const Divider(),
+          const Divider(),
 
-        _infoRow(
-          icon: Icons.phone_outlined,
-          label: 'Phone',
-          value: profile!.phone,
-        ),
+          _infoRow(
+            icon: Icons.phone_outlined,
+            label: 'Phone',
+            value: profile!.phone,
+          ),
+        ],
+
+        if (isEditing) ...[
+          TextField(
+            controller: fullNameController,
+            enabled: false,
+            decoration: const InputDecoration(
+              labelText: 'Full Name',
+              prefixIcon: Icon(Icons.person_outline),
+              helperText: 'Full name cannot be changed',
+            ),
+          ),
+
+          const SizedBox(height: 16),
+
+          TextField(
+            controller: emailController,
+            enabled: false,
+            decoration: const InputDecoration(
+              labelText: 'Email',
+              prefixIcon: Icon(Icons.email_outlined),
+              helperText: 'Email cannot be changed',
+            ),
+          ),
+
+          const SizedBox(height: 16),
+
+          TextField(
+            controller: phoneController,
+            enabled: false,
+            decoration: const InputDecoration(
+              labelText: 'Phone',
+              prefixIcon: Icon(Icons.phone_outlined),
+              helperText: 'Phone number cannot be changed',
+            ),
+          ),
+        ],
       ],
     );
   }
@@ -271,25 +475,26 @@ class _AgentProfileState extends State<AgentProfile> {
     return _sectionCard(
       title: 'Personal Information',
       children: [
-        if (!isEditing)
+        if (!isEditing) ...[
           _infoRow(
             icon: Icons.cake_outlined,
             label: 'Date of Birth',
             value: profile!.dateOfBirth ?? 'Not provided',
           ),
 
-        if (!isEditing) const Divider(),
+          const Divider(),
 
-        if (!isEditing)
           _infoRow(
             icon: Icons.person_outline,
             label: 'Gender',
             value: profile!.gender ?? 'Not provided',
           ),
+        ],
 
         if (isEditing) ...[
           TextField(
             controller: dateOfBirthController,
+            enabled: !isSaving,
             readOnly: true,
             onTap: _selectDateOfBirth,
             decoration: const InputDecoration(
@@ -312,52 +517,13 @@ class _AgentProfileState extends State<AgentProfile> {
               DropdownMenuItem(value: 'FEMALE', child: Text('Female')),
               DropdownMenuItem(value: 'OTHER', child: Text('Other')),
             ],
-            onChanged: (value) {
-              setState(() {
-                selectedGender = value;
-              });
-            },
-          ),
-
-          const SizedBox(height: 20),
-
-          SizedBox(
-            height: 50,
-            width: double.infinity,
-            child: ElevatedButton(
-              onPressed: isSaving ? null : _saveProfile,
-              child: isSaving
-                  ? const SizedBox(
-                      width: 22,
-                      height: 22,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: Colors.white,
-                      ),
-                    )
-                  : const Text('Save Changes'),
-            ),
-          ),
-
-          const SizedBox(height: 8),
-
-          SizedBox(
-            height: 50,
-            width: double.infinity,
-            child: OutlinedButton(
-              onPressed: isSaving
-                  ? null
-                  : () {
-                      if (profile != null) {
-                        _populateFields(profile!);
-                      }
-
-                      setState(() {
-                        isEditing = false;
-                      });
-                    },
-              child: const Text('Cancel'),
-            ),
+            onChanged: isSaving
+                ? null
+                : (value) {
+                    setState(() {
+                      selectedGender = value;
+                    });
+                  },
           ),
         ],
       ],
@@ -368,43 +534,42 @@ class _AgentProfileState extends State<AgentProfile> {
     return _sectionCard(
       title: 'Address',
       children: [
-        if (!isEditing)
+        if (!isEditing) ...[
           _infoRow(
             icon: Icons.home_outlined,
             label: 'Address',
             value: profile!.address ?? 'Not provided',
           ),
 
-        if (!isEditing) const Divider(),
+          const Divider(),
 
-        if (!isEditing)
+          _infoRow(
+            icon: Icons.pin_drop_outlined,
+            label: 'PIN Code',
+            value: profile!.pincode ?? 'Not provided',
+          ),
+
+          const Divider(),
+
           _infoRow(
             icon: Icons.location_city_outlined,
-            label: 'City',
+            label: 'City / Area',
             value: profile!.city ?? 'Not provided',
           ),
 
-        if (!isEditing) const Divider(),
+          const Divider(),
 
-        if (!isEditing)
           _infoRow(
             icon: Icons.map_outlined,
             label: 'State',
             value: profile!.state ?? 'Not provided',
           ),
-
-        if (!isEditing) const Divider(),
-
-        if (!isEditing)
-          _infoRow(
-            icon: Icons.pin_drop_outlined,
-            label: 'Pincode',
-            value: profile!.pincode ?? 'Not provided',
-          ),
+        ],
 
         if (isEditing) ...[
           TextField(
             controller: addressController,
+            enabled: !isSaving,
             maxLines: 3,
             decoration: const InputDecoration(
               labelText: 'Address',
@@ -416,35 +581,122 @@ class _AgentProfileState extends State<AgentProfile> {
           const SizedBox(height: 16),
 
           TextField(
-            controller: cityController,
-            decoration: const InputDecoration(
-              labelText: 'City',
-              prefixIcon: Icon(Icons.location_city_outlined),
+            controller: pincodeController,
+            enabled: !isSaving,
+            keyboardType: TextInputType.number,
+            maxLength: 6,
+            decoration: InputDecoration(
+              labelText: 'PIN Code',
+              prefixIcon: const Icon(Icons.pin_drop_outlined),
+              counterText: '',
+              helperText: cityOptions.isEmpty
+                  ? null
+                  : '${cityOptions.length} area${cityOptions.length == 1 ? '' : 's'} found for this PIN',
+              suffixIcon: isPincodeLoading
+                  ? const Padding(
+                      padding: EdgeInsets.all(12),
+                      child: SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    )
+                  : null,
             ),
+          ),
+
+          const SizedBox(height: 16),
+
+          DropdownButtonFormField<String>(
+            value: cityOptions.contains(cityController.text)
+                ? cityController.text
+                : null,
+            isExpanded: true,
+            decoration: InputDecoration(
+              labelText: 'City / Area',
+              prefixIcon: const Icon(Icons.location_city_outlined),
+              hintText: cityOptions.isEmpty
+                  ? 'Enter PIN code first'
+                  : 'Select your city / area',
+            ),
+            items: cityOptions.map((area) {
+              return DropdownMenuItem<String>(
+                value: area,
+                child: Text(area, overflow: TextOverflow.ellipsis),
+              );
+            }).toList(),
+            onChanged: cityOptions.isEmpty || isSaving
+                ? null
+                : (value) {
+                    if (value == null) {
+                      return;
+                    }
+
+                    setState(() {
+                      cityController.text = value;
+                    });
+                  },
           ),
 
           const SizedBox(height: 16),
 
           TextField(
             controller: stateController,
+            enabled: false,
             decoration: const InputDecoration(
               labelText: 'State',
               prefixIcon: Icon(Icons.map_outlined),
-            ),
-          ),
-
-          const SizedBox(height: 16),
-
-          TextField(
-            controller: pincodeController,
-            keyboardType: TextInputType.number,
-            maxLength: 6,
-            decoration: const InputDecoration(
-              labelText: 'Pincode',
-              prefixIcon: Icon(Icons.pin_drop_outlined),
+              helperText: 'State is automatically determined from PIN code',
             ),
           ),
         ],
+      ],
+    );
+  }
+
+  Widget _buildActions() {
+    if (!isEditing) {
+      return SizedBox(
+        width: double.infinity,
+        height: 50,
+        child: ElevatedButton.icon(
+          onPressed: _startEditing,
+          icon: const Icon(Icons.edit_outlined),
+          label: const Text('Edit Profile'),
+        ),
+      );
+    }
+
+    return Column(
+      children: [
+        SizedBox(
+          height: 50,
+          width: double.infinity,
+          child: ElevatedButton(
+            onPressed: isSaving ? null : _saveProfile,
+            child: isSaving
+                ? const SizedBox(
+                    width: 22,
+                    height: 22,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.white,
+                    ),
+                  )
+                : const Text('Save Changes'),
+          ),
+        ),
+
+        const SizedBox(height: 8),
+
+        SizedBox(
+          height: 50,
+          width: double.infinity,
+          child: OutlinedButton(
+            onPressed: isSaving ? null : _cancelEditing,
+            child: const Text('Cancel'),
+          ),
+        ),
       ],
     );
   }
@@ -472,24 +724,6 @@ class _AgentProfileState extends State<AgentProfile> {
           const SizedBox(height: 16),
 
           ...children,
-
-          if (!isEditing && title != 'Basic Information') ...[
-            const SizedBox(height: 16),
-
-            SizedBox(
-              width: double.infinity,
-              height: 48,
-              child: OutlinedButton.icon(
-                onPressed: () {
-                  setState(() {
-                    isEditing = true;
-                  });
-                },
-                icon: const Icon(Icons.edit_outlined),
-                label: const Text('Edit Profile'),
-              ),
-            ),
-          ],
         ],
       ),
     );
