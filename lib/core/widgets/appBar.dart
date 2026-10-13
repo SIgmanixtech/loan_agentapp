@@ -6,11 +6,13 @@ class AgentAppBar extends StatelessWidget
     implements PreferredSizeWidget {
   final String title;
   final VoidCallback? onLogout;
+  final List<Widget> actions;
 
   const AgentAppBar({
     super.key,
     required this.title,
     this.onLogout,
+    this.actions = const [],
   });
 
   @override
@@ -34,6 +36,8 @@ class AgentAppBar extends StatelessWidget
       centerTitle: false,
 
       actions: [
+        ...actions,
+
         if (onLogout != null)
           IconButton(
             tooltip: 'Logout',

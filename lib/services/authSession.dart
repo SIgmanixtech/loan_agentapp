@@ -16,6 +16,8 @@ class AuthSession {
   static final GlobalKey<ScaffoldMessengerState> messengerKey =
       GlobalKey<ScaffoldMessengerState>();
 
+  static const Duration _maxTimerDuration = Duration(days: 1);
+
   Timer? _expiryTimer;
 
   String? _activeToken;
@@ -72,6 +74,19 @@ class AuthSession {
 
     if (duration.isNegative || duration == Duration.zero) {
       await logout(expired: true);
+      return;
+    }
+
+    // On web a timer longer than about 24 days fires immediately, which
+    // would log the agent out right after login. Long sessions are
+    // re-armed in steps instead.
+    if (duration > _maxTimerDuration) {
+      _expiryTimer = Timer(_maxTimerDuration, () {
+        if (_activeToken == token) {
+          startSession(token);
+        }
+      });
+
       return;
     }
 

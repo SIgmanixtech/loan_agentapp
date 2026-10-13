@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../core/theme/appColors.dart';
 import '../../core/widgets/appBar.dart';
@@ -243,6 +244,25 @@ class _AgentProfileState extends State<AgentProfile> {
     });
   }
 
+  // The saved PIN code, city and state were not touched, so they do not
+  // need to be verified again (the PIN code lookup may be unavailable).
+  bool get _isSavedLocationUnchanged {
+    final saved = profile;
+
+    if (saved == null) {
+      return false;
+    }
+
+    final city = cityController.text.trim();
+    final state = stateController.text.trim();
+
+    return city.isNotEmpty &&
+        state.isNotEmpty &&
+        pincodeController.text.trim() == (saved.pincode ?? '') &&
+        city == (saved.city ?? '') &&
+        state == (saved.state ?? '');
+  }
+
   Future<void> _saveProfile() async {
     final pincode = pincodeController.text.trim();
     final city = cityController.text.trim();
@@ -273,14 +293,16 @@ class _AgentProfileState extends State<AgentProfile> {
       return;
     }
 
-    if (cityOptions.isEmpty || state.isEmpty) {
-      _showError('Please enter a valid PIN code and select your city/area.');
-      return;
-    }
+    if (!_isSavedLocationUnchanged) {
+      if (cityOptions.isEmpty || state.isEmpty) {
+        _showError('Please enter a valid PIN code and select your city/area.');
+        return;
+      }
 
-    if (!cityOptions.contains(city)) {
-      _showError('Please select your city/area.');
-      return;
+      if (!cityOptions.contains(city)) {
+        _showError('Please select your city/area.');
+        return;
+      }
     }
 
     setState(() {
@@ -362,7 +384,18 @@ class _AgentProfileState extends State<AgentProfile> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AgentAppBar(title: 'Profile', onLogout: widget.onLogout),
+      appBar: AgentAppBar(
+        title: 'Profile',
+        onLogout: widget.onLogout,
+        actions: [
+          if (!isEditing && !isLoading && profile != null)
+            IconButton(
+              tooltip: 'Edit Profile',
+              onPressed: _startEditing,
+              icon: const Icon(Icons.edit_outlined, color: AppColors.black),
+            ),
+        ],
+      ),
       body: _buildBody(),
     );
   }
@@ -396,9 +429,7 @@ class _AgentProfileState extends State<AgentProfile> {
 
           _buildAddressInformation(),
 
-          const SizedBox(height: 20),
-
-          _buildActions(),
+          if (isEditing) ...[const SizedBox(height: 20), _buildActions()],
         ],
       ),
     );
@@ -531,6 +562,11 @@ class _AgentProfileState extends State<AgentProfile> {
   }
 
   Widget _buildAddressInformation() {
+    // Keep showing the saved city when its PIN code could not be verified.
+    final cityItems = cityOptions.isEmpty && _isSavedLocationUnchanged
+        ? [cityController.text.trim()]
+        : cityOptions;
+
     return _sectionCard(
       title: 'Address',
       children: [
@@ -585,6 +621,7 @@ class _AgentProfileState extends State<AgentProfile> {
             enabled: !isSaving,
             keyboardType: TextInputType.number,
             maxLength: 6,
+            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
             decoration: InputDecoration(
               labelText: 'PIN Code',
               prefixIcon: const Icon(Icons.pin_drop_outlined),
@@ -608,7 +645,7 @@ class _AgentProfileState extends State<AgentProfile> {
           const SizedBox(height: 16),
 
           DropdownButtonFormField<String>(
-            value: cityOptions.contains(cityController.text)
+            value: cityItems.contains(cityController.text)
                 ? cityController.text
                 : null,
             isExpanded: true,
@@ -619,7 +656,7 @@ class _AgentProfileState extends State<AgentProfile> {
                   ? 'Enter PIN code first'
                   : 'Select your city / area',
             ),
-            items: cityOptions.map((area) {
+            items: cityItems.map((area) {
               return DropdownMenuItem<String>(
                 value: area,
                 child: Text(area, overflow: TextOverflow.ellipsis),
@@ -655,18 +692,6 @@ class _AgentProfileState extends State<AgentProfile> {
   }
 
   Widget _buildActions() {
-    if (!isEditing) {
-      return SizedBox(
-        width: double.infinity,
-        height: 50,
-        child: ElevatedButton.icon(
-          onPressed: _startEditing,
-          icon: const Icon(Icons.edit_outlined),
-          label: const Text('Edit Profile'),
-        ),
-      );
-    }
-
     return Column(
       children: [
         SizedBox(

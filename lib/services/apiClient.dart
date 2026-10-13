@@ -47,11 +47,18 @@ class ApiClient {
   static Future<http.Response> _handleResponse(
     http.Response response, {
     required bool authenticated,
+    required Map<String, String> headers,
   }) async {
     // A 401 from login/register means wrong credentials, not an
     // expired session, so only authenticated requests end the session.
     if (authenticated && response.statusCode == 401) {
-      await AuthSession.instance.logout(expired: true);
+      final sentToken = headers['Authorization']?.replaceFirst('Bearer ', '');
+
+      // A late 401 for a request sent with a previous token must not
+      // end the session that was started by logging in again.
+      if (sentToken == null || AuthSession.instance.isCurrentToken(sentToken)) {
+        await AuthSession.instance.logout(expired: true);
+      }
     }
 
     return response;
@@ -72,7 +79,11 @@ class ApiClient {
       headers: headers,
     );
 
-    return _handleResponse(response, authenticated: authenticated);
+    return _handleResponse(
+      response,
+      authenticated: authenticated,
+      headers: headers,
+    );
   }
 
   // ============================================================
@@ -92,7 +103,11 @@ class ApiClient {
       body: body != null ? jsonEncode(body) : null,
     );
 
-    return _handleResponse(response, authenticated: authenticated);
+    return _handleResponse(
+      response,
+      authenticated: authenticated,
+      headers: headers,
+    );
   }
 
   // ============================================================
@@ -112,6 +127,10 @@ class ApiClient {
       body: body != null ? jsonEncode(body) : null,
     );
 
-    return _handleResponse(response, authenticated: authenticated);
+    return _handleResponse(
+      response,
+      authenticated: authenticated,
+      headers: headers,
+    );
   }
 }
